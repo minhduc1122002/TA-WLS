@@ -45,14 +45,14 @@ class H36MDataSet(Dataset):
                     for subact in [1, 2]:
                         print("Reading subject {0}, action {1}, subaction {2}".format(subj, action, subact))
                         filename = '{0}/S{1}/{2}_{3}.txt'.format(self.path_to_data, subj, action, subact)
-                        the_sequence = readCSVasFloat(filename)
+                        the_sequence = data_utils.readCSVasFloat(filename)
                         n, d = the_sequence.shape
                         even_list = range(0, n, self.sample_rate)
                         num_frames = len(even_list)
                         the_sequence = np.array(the_sequence[even_list, :])
                         the_sequence = torch.from_numpy(the_sequence).float().cuda()
                         the_sequence[:, 0:6] = 0
-                        p3d = expmap2xyz_torch(the_sequence)
+                        p3d = data_utils.expmap2xyz_torch(the_sequence)
                         self.p3d[key] = p3d.view(num_frames, -1).cpu().data.numpy()
                         valid_frames = np.arange(0, num_frames - self.seq_len + 1, skip_rate)
                         tmp_data_idx_1 = [key] * len(valid_frames)
@@ -62,7 +62,7 @@ class H36MDataSet(Dataset):
                 else:
                     print("Reading subject {0}, action {1}, subaction {2}".format(subj, action, 1))
                     filename = '{0}/S{1}/{2}_{3}.txt'.format(self.path_to_data, subj, action, 1)
-                    the_sequence1 = readCSVasFloat(filename)
+                    the_sequence1 = data_utils.readCSVasFloat(filename)
                     n, d = the_sequence1.shape
                     even_list = range(0, n, self.sample_rate)
 
@@ -70,20 +70,20 @@ class H36MDataSet(Dataset):
                     the_sequence1 = np.array(the_sequence1[even_list, :])
                     the_seq1 = torch.from_numpy(the_sequence1).float().cuda()
                     the_seq1[:, 0:6] = 0
-                    p3d1 = expmap2xyz_torch(the_seq1)
+                    p3d1 = data_utils.expmap2xyz_torch(the_seq1)
                     self.p3d[key] = p3d1.view(num_frames1, -1).cpu().data.numpy()
                     print("Reading subject {0}, action {1}, subaction {2}".format(subj, action, 2))
                     filename = '{0}/S{1}/{2}_{3}.txt'.format(self.path_to_data, subj, action, 2)
-                    the_sequence2 = readCSVasFloat(filename)
+                    the_sequence2 = data_utils.readCSVasFloat(filename)
                     n, d = the_sequence2.shape
                     even_list = range(0, n, self.sample_rate)
                     num_frames2 = len(even_list)
                     the_sequence2 = np.array(the_sequence2[even_list, :])
                     the_seq2 = torch.from_numpy(the_sequence2).float().cuda()
                     the_seq2[:, 0:6] = 0
-                    p3d2 = expmap2xyz_torch(the_seq2)
+                    p3d2 = data_utils.expmap2xyz_torch(the_seq2)
                     self.p3d[key + 1] = p3d2.view(num_frames2, -1).cpu().data.numpy()
-                    fs_sel1, fs_sel2 = find_indices_256(num_frames1, num_frames2, self.seq_len,
+                    fs_sel1, fs_sel2 = data_utils.find_indices_256(num_frames1, num_frames2, self.seq_len,
                                                                    input_n=self.seq_len)
                     valid_frames = fs_sel1[:, 0]
                     tmp_data_idx_1 = [key] * len(valid_frames)
@@ -108,5 +108,5 @@ class H36MDataSet(Dataset):
         fs = np.arange(start_frame, start_frame + self.seq_len)
         input = self.p3d[key][fs]
         input = input[:, self.dimensions_to_use]
-        mask = generate_continuous_corruption(input.shape, self.missing_length, self.num_missing)
+        mask = data_utils.generate_continuous_corruption(input.shape, self.missing_length, self.num_missing)
         return input.astype(np.float32), mask.astype(np.float32)

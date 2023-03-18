@@ -9,7 +9,6 @@ import torch
 import numpy as np
 from utils.loss_funcs import *
 from utils.data_utils import define_actions
-from utils.h36_3d_viz import visualize
 from utils.parser import args
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -18,10 +17,18 @@ model = Model(input_channels=3, time_frame=args.total_frame,
               ssta_dropout=0, num_joints=args.total_joint, n_ten_layers=4, ten_kernel_size=[3, 3], ten_dropout=0).to(device)
 
 
-model_name='h36_3d_' + str(missing_frame) + 'frames_' + str(missing_joint) + '_ckpt'
+model_name='h36_3d_' + str(args.missing_frame) + 'frames_' + str(args.missing_joint) + '_ckpt'
+
+def seed_everything(seed):
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    
+    if torch.cuda.is_available(): 
+        torch.cuda.manual_seed(seed)
+        torch.backends.cudnn.deterministic = True
 
 def train():
-    optimizer = optim.Adam(model.parameters(), lr=args.base_lr, weight_decay=1e-05)
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-05)
     scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[15, 25, 35, 40], gamma=0.1)
     train_loss = []
     val_loss = []
@@ -30,7 +37,7 @@ def train():
     vald_dataset = h36motion3d.H36MDataSet(data_dir=args.data_dir, total_seq=args.total_frame, skip_rate=1, actions=None, split=1, num_missing=args.missing_joint, missing_length=args.missing_frame)
     vald_loader = DataLoader(vald_dataset, batch_size=args.batch_size, shuffle=True, num_workers=0, pin_memory=True)
 
-    for epoch in range(n_epoch):
+    for epoch in range(args.n_epochs):
       running_loss = 0
       n = 0
       model.train()
@@ -44,7 +51,7 @@ def train():
           sequences_missing = (mask * sequences_gt).permute(0, 3, 1, 2)
           optimizer.zero_grad() 
           sequences_predict = model(sequences_missing).permute(0, 1, 3, 2)
-          loss = loss_func(sequences_predict, sequences_gt, mask)
+          loss = loss_func(sequences_predict, sequences_gt, mask, args.total_frame, args.total_joint, args.missing_frame, args.missing_joint)
           if cnt % 200 == 0:
             print('[%d, %5d] Training loss: %.3f' %(epoch + 1, cnt + 1, loss.item())) 
           loss.backward()  
@@ -68,7 +75,7 @@ def train():
               sequences_missing = (mask * sequences_gt).permute(0, 3, 1, 2)
               optimizer.zero_grad() 
               sequences_predict = model(sequences_missing).permute(0, 1, 3, 2)
-              loss = loss_func(sequences_predict, sequences_gt, mask)
+              loss = loss_func(sequences_predict, sequences_gt, mask, args.total_frame, args.total_joint, args.missing_frame, args.missing_joint)
               if cnt % 200 == 0:
                 print('[%d, %5d]  Validation loss: %.3f' %(epoch + 1, cnt + 1, loss.item())) 
               running_loss += loss * batch_dim
@@ -105,7 +112,7 @@ def test():
             mask = mask.view(-1, args.total_frame, args.total_joint, 3)
             sequences_missing = (mask * sequences_gt).permute(0, 3, 1, 2)
             sequences_predict = model(sequences_missing).permute(0, 1, 3, 2)
-            loss = loss_func(sequences_predict, sequences_gt, mask)
+            loss = loss_func(sequences_predict, sequences_gt, mask, args.total_frame, args.total_joint, args.missing_frame, args.missing_joint)
             running_loss += loss * batch_dim
             accum_loss += loss * batch_dim
       print('Loss at test subject for action : ' + str(action) + ' is: ' + str(running_loss/n))
@@ -114,6 +121,7 @@ def test():
 
 
 if __name__ == '__main__':
+    seed_everything(42)
     if args.mode == 'train':
       train()
     elif args.mode == 'test':
