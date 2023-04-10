@@ -2,6 +2,10 @@
 <h1>Predicting Missing Markers In Human Motion Using Graph Convolutional And Temporal Attention Network</h1>
 </div>
 
+<div align="center">
+<img src=https://user-images.githubusercontent.com/78080278/230953331-295ea805-1460-4dc2-98f5-7a8cb21616cc.png>
+</div>
+
  ### Install dependencies:
 ```
  $ pip install -r requirements.txt
@@ -49,16 +53,18 @@ Directory structure:
 ```
 Put the all downloaded datasets in ../datasets directory.
 
-### Train
+### Train with different missing mode
 The arguments for running the code are defined in [parser.py](utils/parser.py)
   ```bash
-  python main_h36_3d.py
+  python main_h36_3d.py --data_dir /PATH/TO/DATASET --missing_mode random
   ```
- 
-### Test
-To test on the pretrained model, we have used the following commands:
- ```bash
- python main_h36_3d.py --mode test
+  
+  ```bash
+  python main_h36_3d.py --data_dir /PATH/TO/DATASET --missing_mode left_leg
+  ```
+  
+  ```bash
+  python main_h36_3d.py --data_dir /PATH/TO/DATASET --missing_mode right_hand
   ```
  
  ### Acknowledgments
