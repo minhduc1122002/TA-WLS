@@ -1,7 +1,40 @@
 import math
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+class PositionalEncoding(nn.Module):
+
+    def __init__(self, channel, joint_num, time_len):
+        super(PositionalEncoding, self).__init__()
+        self.joint_num = joint_num
+        self.time_len = time_len
+
+        
+        # temporal embedding
+        pos_list = []
+        for t in range(self.time_len):
+          for j_id in range(self.joint_num):
+            pos_list.append(t)
+
+        position = torch.from_numpy(np.array(pos_list)).unsqueeze(1).float()
+        # pe = position/position.max()*2 -1
+        # pe = pe.view(time_len, joint_num).unsqueeze(0).unsqueeze(0)
+        # Compute the positional encodings once in log space.
+        pe = torch.zeros(self.time_len * self.joint_num, channel)
+
+        div_term = torch.exp(torch.arange(0, channel, 2).float() *
+                             -(math.log(10000.0) / channel))  # channel//2
+        print(pe.size())
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.view(time_len, joint_num, channel).permute(2, 0, 1).unsqueeze(0)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):  # nctv
+        x = x + self.pe[:, :, :x.size(2)]
+        return x
 
 class GCN(nn.Module):
     def __init__(self, in_channels, out_channels, num_frames, num_joints):
@@ -33,13 +66,17 @@ class GCN(nn.Module):
         return x 
 
 class TA(nn.Module):
-    def __init__(self, in_channels, out_channels=64, num_heads=8, dropout=0.1):
+    def __init__(self, in_channels, out_channels=64, num_frames=25, num_joints=18, num_heads=8, dropout=0.1, use_pe=False):
         super(TA, self).__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
         
         self.d_head = int(out_channels / num_heads) 
         self.num_heads = num_heads
+        self.use_pe = use_pe
+
+        if use_pe:
+          self.pes = PositionalEncoding(self.in_channels, num_joints, num_frames)
 
         self.qkv_conv = nn.Conv2d(self.in_channels, 3 * self.out_channels, kernel_size=1, stride=1, padding=0)
 
@@ -53,7 +90,9 @@ class TA(nn.Module):
         # Input x
         # (batch_size, channels, frames, joint)
         N, C, T, V = x.size()
-        
+        if self.use_pe:
+          x = self.pes(x)
+
         # (batch_size * joint, channels, 1, frames)
         x = x.permute(0, 3, 1, 2).reshape(-1, C, 1, T)
         # (batch_size * joint, channels, 1, frame_block)
@@ -108,7 +147,7 @@ class TA(nn.Module):
         ret_shape = (N, num_heads * dv, T, V)
         return torch.reshape(x, ret_shape)
 
-class SCTAN(nn.Module):
+class TAGCN_Block(nn.Module):
     def __init__(self,
                  in_channels,
                  out_channels,
@@ -116,12 +155,13 @@ class SCTAN(nn.Module):
                  num_joints,
                  num_heads,
                  dropout,
+                 use_pe=False,
                  bias=True):
         
-        super(SCTAN,self).__init__()
+        super(TAGCN_Block,self).__init__()
         
         self.gcn = GCN(in_channels, out_channels, num_frames, num_joints)
-        self.ta = TA(out_channels, out_channels, num_heads=num_heads, dropout=dropout)
+        self.ta = TA(out_channels, out_channels, num_frames, num_joints, num_heads=num_heads, dropout=dropout, use_pe=use_pe)
 
         if in_channels != out_channels: 
             self.residual = nn.Sequential(
@@ -168,45 +208,3 @@ class TEN(nn.Module):
     def forward(self, x):
         output = self.block(x)
         return output
-
-class Model(nn.Module):
-    def __init__(self,
-                 input_channels,
-                 time_frame,
-                 ssta_dropout,
-                 num_joints,
-                 n_ten_layers,
-                 ten_kernel_size,
-                 ten_dropout,
-                 bias=True):
-        
-        super(Model,self).__init__()
-        self.input_time_frame = time_frame
-        self.num_joints = num_joints
-        self.n_ten_layers = n_ten_layers
-
-        self.sstas = nn.ModuleList()
-        self.tens = nn.ModuleList()
-        self.relus = nn.ModuleList()
-        
-        
-        self.sstas.append(SCTAN(in_channels=input_channels, out_channels=64, num_frames=self.input_time_frame, num_joints=self.num_joints, num_heads=1, dropout=ssta_dropout))
-        self.sstas.append(SCTAN(in_channels=64, out_channels=32, num_frames=self.input_time_frame, num_joints=self.num_joints, num_heads=1, dropout=ssta_dropout))
-        self.sstas.append(SCTAN(in_channels=32, out_channels=64, num_frames=self.input_time_frame, num_joints=self.num_joints, num_heads=1, dropout=ssta_dropout))
-        self.sstas.append(SCTAN(in_channels=64, out_channels=3, num_frames=self.input_time_frame, num_joints=self.num_joints, num_heads=1, dropout=ssta_dropout))                                                          
-
-        self.tens.append(TEN(self.input_time_frame, self.input_time_frame, ten_kernel_size, ten_dropout))
-        self.relus.append(nn.PReLU())
-
-        for i in range(1, self.n_ten_layers):
-            self.tens.append(TEN(self.input_time_frame, self.input_time_frame, ten_kernel_size, ten_dropout))
-            self.relus.append(nn.PReLU())
-
-    def forward(self, x):
-        for ssta in (self.sstas):
-            x = ssta(x)
-        x = x.permute(0, 2, 1, 3)
-        x = self.relus[0](self.tens[0](x))
-        for i in range(1, self.n_ten_layers):
-            x = self.relus[i](self.tens[i](x)) + x
-        return x
