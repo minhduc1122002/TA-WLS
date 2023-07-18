@@ -4,84 +4,135 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class PositionalEncoding(nn.Module):
+class MLPLayer(nn.Module):
+    def __init__(self, in_dim, out_dim, dropout=0.0):
+        super().__init__()
 
-    def __init__(self, channel, joint_num, time_len):
-        super(PositionalEncoding, self).__init__()
-        self.joint_num = joint_num
-        self.time_len = time_len
+        layer = nn.Sequential(
+            nn.Conv2d(in_dim, out_dim, 1),
+            nn.BatchNorm2d(out_dim),
+            nn.PReLU(),
+            nn.Dropout(p=dropout)
+        )
 
-        
-        # temporal embedding
-        pos_list = []
-        for t in range(self.time_len):
-          for j_id in range(self.joint_num):
-            pos_list.append(t)
+        self.layer = layer
 
-        position = torch.from_numpy(np.array(pos_list)).unsqueeze(1).float()
-        # pe = position/position.max()*2 -1
-        # pe = pe.view(time_len, joint_num).unsqueeze(0).unsqueeze(0)
-        # Compute the positional encodings once in log space.
-        pe = torch.zeros(self.time_len * self.joint_num, channel)
+    def forward(self, x):
+        return self.layer(x)
 
-        div_term = torch.exp(torch.arange(0, channel, 2).float() *
-                             -(math.log(10000.0) / channel))  # channel//2
-        print(pe.size())
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.view(time_len, joint_num, channel).permute(2, 0, 1).unsqueeze(0)
-        self.register_buffer('pe', pe)
+class KernelMLP(nn.Module):
+    def __init__(self, in_dim, out_dim, n_layers, scale, dropout=0.0, residual=False):
+        super().__init__()
 
-    def forward(self, x):  # nctv
-        x = x + self.pe[:, :, :x.size(2)]
+        hidden_dim = int(scale * max(in_dim, out_dim))
+        layers = [MLPLayer(in_dim, out_dim, dropout)]
+
+        for _ in range(n_layers - 1):
+            layers.append(MLPLayer(hidden_dim, hidden_dim, dropout))
+
+        # layers.append(MLPLayer(hidden_dim, out_dim, dropout))
+
+        self.layers = nn.ModuleList(layers)
+        self.do_residual = residual
+
+        if self.do_residual:
+          if in_dim == out_dim:
+              self.residual_layer = nn.Sequential()
+          else:
+              self.residual_layer = nn.Conv2d(in_dim, out_dim, 1)
+
+    def forward(self, x):
+        shape = x.shape
+
+        _x = x
+        for layer in self.layers:
+            x = layer(x)
+
+        if self.do_residual:
+            x += self.residual_layer(_x)
+
         return x
 
-class GCN(nn.Module):
-    def __init__(self, in_channels, out_channels, num_frames, num_joints):
-        super(GCN, self).__init__()
-        
+class WLSMLPLayer(nn.Module):
+    def __init__(self, in_dim, out_dim, num_frames, num_joints, n_hidden, scale_hidden, dropout=0.0, residual=False):
+        super().__init__()
+        self.out_dim = out_dim + (out_dim % 2)
+        self.transform = KernelMLP(in_dim, self.out_dim // 2, n_hidden, scale_hidden, dropout, residual=residual)
+
         self.A = nn.Parameter(torch.FloatTensor(num_frames, num_joints, num_joints))
         stdv = 1. / math.sqrt(self.A.size(1))
         self.A.data.uniform_(-stdv, stdv)
 
-        # self.T = nn.Parameter(torch.FloatTensor(num_joints, num_frames, num_frames)) 
-        # stdv = 1. / math.sqrt(self.T.size(1))
-        # self.T.data.uniform_(-stdv, stdv)
+    def forward(self, x):
+        x_trans = self.transform(x)
+
+        x_update = torch.einsum('nctv,tvw->nctw', (x_trans, self.A)).contiguous()
+        features = torch.cat([x_update, x_trans], 1)
+        return features
+
+
+class GCN(nn.Module):
+    def __init__(self, in_channels, out_channels, num_frames, num_joints, use_act, dropout):
+        super(GCN, self).__init__()
+
+        self.A = nn.Parameter(torch.FloatTensor(num_frames, num_joints, num_joints))
+        stdv = 1. / math.sqrt(self.A.size(1))
+        self.A.data.uniform_(-stdv, stdv)
 
         self.conv = nn.Conv2d(
                 in_channels,
                 out_channels,
                 (1, 1)
         )
-        
+        self.use_act = use_act
         self.norm = nn.BatchNorm2d(out_channels)
-        self.relu = nn.PReLU()
+        self.act = nn.PReLU()
+        self.dropout = nn.Dropout(p=dropout)
 
     def forward(self, x):
-        # x = torch.einsum('nctv,vtq->ncqv', (x, self.T))
         x = torch.einsum('nctv,tvw->nctw', (x, self.A)).contiguous()
         x = self.conv(x)
         x = self.norm(x)
-        x = self.relu(x)
-        return x 
+        if self.use_act:
+          x = self.act(x)
+        return x
+
+class GraphConvolution(nn.Module):
+    def __init__(self, in_channels, out_channels, num_frames, num_joints, use_act, dropout):
+        super(GraphConvolution, self).__init__()
+
+        self.conv = nn.Conv2d(
+                in_channels,
+                out_channels,
+                (1, 1)
+        )
+
+        self.use_act = use_act
+        self.norm = nn.BatchNorm2d(out_channels)
+        self.act = nn.PReLU()
+        self.dropout = nn.Dropout(p=dropout)
+
+    def forward(self, x, A):
+        x = torch.einsum('nctv,vw->nctw', (x, A)).contiguous()
+        x = self.conv(x)
+        x = self.norm(x)
+        if self.use_act:
+          x = self.act(x)
+        return x
 
 class TA(nn.Module):
-    def __init__(self, in_channels, out_channels=64, num_frames=25, num_joints=18, num_heads=8, dropout=0.1, use_pe=False):
+    def __init__(self, in_channels, out_channels=64, num_frames=25, num_joints=18, num_heads=8, dropout=0.1):
         super(TA, self).__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
-        
-        self.d_head = int(out_channels / num_heads) 
+
+        self.d_head = int(out_channels / num_heads)
         self.num_heads = num_heads
-        self.use_pe = use_pe
 
-        if use_pe:
-          self.pes = PositionalEncoding(self.in_channels, num_joints, num_frames)
+        self.qkv_conv = nn.Conv2d(self.in_channels, 3 * self.in_channels, kernel_size=1, stride=1, padding=0)
 
-        self.qkv_conv = nn.Conv2d(self.in_channels, 3 * self.out_channels, kernel_size=1, stride=1, padding=0)
+        self.attn_linear = nn.Conv2d(self.in_channels, self.out_channels, kernel_size=1, stride=1)
 
-        self.attn_linear = nn.Conv2d(self.out_channels, self.out_channels, kernel_size=1, stride=1)
-        
         self.concat_bn = nn.BatchNorm2d(out_channels)
         self.bn = nn.BatchNorm2d(out_channels)
         self.drop_out = nn.Dropout(dropout, inplace=True)
@@ -90,8 +141,6 @@ class TA(nn.Module):
         # Input x
         # (batch_size, channels, frames, joint)
         N, C, T, V = x.size()
-        if self.use_pe:
-          x = self.pes(x)
 
         # (batch_size * joint, channels, 1, frames)
         x = x.permute(0, 3, 1, 2).reshape(-1, C, 1, T)
@@ -147,23 +196,43 @@ class TA(nn.Module):
         ret_shape = (N, num_heads * dv, T, V)
         return torch.reshape(x, ret_shape)
 
-class TAGCN_Block(nn.Module):
+class TCN(nn.Module):
+    def __init__(self, out_channels=64, kernel_size=(3, 1), stride=1, dropout=0.0):
+        super(TCN, self).__init__()
+        padding = ((kernel_size[0] - 1) // 2, 0)
+        self.tcn = nn.Sequential(
+            nn.Conv2d(
+                out_channels,
+                out_channels,
+                kernel_size,
+                stride,
+                padding,
+            ),
+            nn.BatchNorm2d(out_channels),
+            nn.Dropout(dropout, inplace=True),
+        )
+
+    def forward(self, x):
+        x = self.tcn(x)
+        return x
+
+class TAWLS_Block(nn.Module):
     def __init__(self,
                  in_channels,
                  out_channels,
                  num_frames,
                  num_joints,
                  num_heads,
-                 dropout,
-                 use_pe=False,
-                 bias=True):
-        
-        super(TAGCN_Block,self).__init__()
-        
-        self.gcn = GCN(in_channels, out_channels, num_frames, num_joints)
-        self.ta = TA(out_channels, out_channels, num_frames, num_joints, num_heads=num_heads, dropout=dropout, use_pe=use_pe)
+                 n_hidden,
+                 scale_hidden,
+                 dropout):
 
-        if in_channels != out_channels: 
+        super(TAWLS_Block, self).__init__()
+
+        self.gcn = WLSMLPLayer(in_channels, out_channels, num_frames, num_joints, n_hidden=n_hidden, scale_hidden=scale_hidden, dropout=dropout, residual=False)
+        self.ta = TA(out_channels, out_channels, num_frames, num_joints, num_heads=num_heads, dropout=dropout)
+
+        if in_channels != out_channels:
             self.residual = nn.Sequential(
                 nn.Conv2d(
                     in_channels,
@@ -180,31 +249,92 @@ class TAGCN_Block(nn.Module):
 
     def forward(self, x):
         res = self.residual(x)
-        x = self.gcn(x) 
+        x = self.gcn(x)
         x = self.ta(x)
         x = x + res
         x = self.relu(x)
         return x
 
-class TEN(nn.Module):
+class TAGCN_Block(nn.Module):
     def __init__(self,
                  in_channels,
                  out_channels,
-                 kernel_size,
+                 num_frames,
+                 num_joints,
+                 num_heads,
+                 use_act,
                  dropout,
-                 bias=True):
-        
-        super(TEN, self).__init__()
+                 fixed=True):
 
-        self.kernel_size = kernel_size
-        padding = ((kernel_size[0] - 1) // 2, (kernel_size[1] - 1) // 2)
+        super(TAGCN_Block,self).__init__()
+        self.fixed = fixed
+        if self.fixed:
+          self.gcn = GraphConvolution(in_channels, out_channels, num_frames, num_joints, use_act=use_act, dropout=dropout)
+        else:
+          self.gcn = GCN(in_channels, out_channels, num_frames, num_joints, use_act=use_act, dropout=dropout)
 
-        self.block= [nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, padding=padding),
-                     nn.BatchNorm2d(out_channels),
-                     nn.Dropout(dropout, inplace=True)] 
+        self.ta = TA(out_channels, out_channels, num_frames, num_joints, num_heads=num_heads, dropout=dropout)
 
-        self.block = nn.Sequential(*self.block)
+        if in_channels != out_channels:
+            self.residual = nn.Sequential(
+                nn.Conv2d(
+                    in_channels,
+                    out_channels,
+                    kernel_size=1,
+                    stride=(1, 1)
+                ),
+                nn.BatchNorm2d(out_channels),
+            )
+        else:
+            self.residual = nn.Identity()
 
-    def forward(self, x):
-        output = self.block(x)
-        return output
+        self.relu = nn.PReLU()
+
+    def forward(self, x, A):
+        res = self.residual(x)
+        if self.fixed:
+          x = self.gcn(x, A)
+        else:
+          x = self.gcn(x)
+        x = self.ta(x)
+        x = x + res
+        x = self.relu(x)
+        return x
+
+class STGCN_Block(nn.Module):
+    def __init__(self,
+                 in_channels,
+                 out_channels,
+                 num_frames,
+                 num_joints,
+                 kernel_size,
+                 use_act,
+                 dropout):
+
+        super(STGCN_Block,self).__init__()
+
+        self.gcn = GraphConvolution(in_channels, out_channels, num_frames, num_joints, use_act=use_act, dropout=dropout)
+        self.tcn = TCN(out_channels, kernel_size=kernel_size, stride=1, dropout=dropout)
+
+        if in_channels != out_channels:
+            self.residual = nn.Sequential(
+                nn.Conv2d(
+                    in_channels,
+                    out_channels,
+                    kernel_size=1,
+                    stride=(1, 1)
+                ),
+                nn.BatchNorm2d(out_channels),
+            )
+        else:
+            self.residual = nn.Identity()
+
+        self.relu = nn.PReLU()
+
+    def forward(self, x, A):
+        res = self.residual(x)
+        x = self.gcn(x, A)
+        x = self.tcn(x)
+        x = x + res
+        x = self.relu(x)
+        return x
