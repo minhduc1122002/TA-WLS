@@ -6,7 +6,7 @@ import torch.optim as optim
 import torch.autograd
 import torch
 import numpy as np
-from tqdm.notebook import tqdm
+from tqdm import tqdm
 
 from utils.data_utils import define_actions
 from utils.parser import config
