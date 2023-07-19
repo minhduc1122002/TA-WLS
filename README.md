@@ -3,15 +3,16 @@
 </div>
 
 <div align="center">
-<!-- <img src=https://user-images.githubusercontent.com/78080278/230953331-295ea805-1460-4dc2-98f5-7a8cb21616cc.png> -->
+<img src=https://github.com/minhduc1122002/TA-WLS/assets/78080278/0fe35035-42af-48ec-929b-d702fee1175e>
 </div>
 
- ### Install dependencies:
+## Install dependencies:
+
 ```
- $ pip install -r requirements.txt
+pip install -r requirements.txt
 ```
  
-### Get the data
+## Get the data
 
 [Human3.6m](http://vision.imar.ro/human3.6m/description.php) in exponential map can be downloaded from [here](http://www.cs.stanford.edu/people/ashesh/h3.6m.zip).
  
@@ -25,11 +26,30 @@ H3.6m
 `-- S11
 ```
 
-### Train with different missing mode
+## Training
 The arguments for running the code are defined in [parser.py](utils/parser.py)
-  ```bash
-  python main_h36_3d.py --data_dir /PATH/TO/DATASET --missing_mode random
-  ```
+
+#### TA-WLS
+```bash
+python main_h36_3d.py --data_path /PATH/TO/DATASET --model_name tawls
+```
+#### TA-GCN
+```bash
+python main_h36_3d.py --data_path /PATH/TO/DATASET --model_name tagcn
+```
+#### ST-GCN
+```bash
+python main_h36_3d.py --data_path /PATH/TO/DATASET --model_name stgcn
+```
+
+After Training the model checkpoint is saved to ./ directory
+
+## Testing
+
+```bash
+python main_h36_3d.py --data_path /PATH/TO/DATASET --model_name tawls --model_path PATH/TO/CHECKPOINT
+```
+
  
  ### Acknowledgments
  
