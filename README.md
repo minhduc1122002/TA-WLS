@@ -1,6 +1,6 @@
-<div align="center">
-<h1>Reconstructing Missing Joints in 3D Human Motion with Temporal-Structural Awareness Graph Neural Network</h1>
-</div>
+## Overview
+
+This is the implementation of the paper "Reconstructing Missing Joints in 3D Human Motion with Temporal-Structural Awareness Graph Neural Network"
 
 <div align="center">
 <img src=https://github.com/minhduc1122002/TA-WLS/assets/78080278/0fe35035-42af-48ec-929b-d702fee1175e>
